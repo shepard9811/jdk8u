@@ -74,39 +74,6 @@ enum SignatureScheme {
                                     NamedGroup.SECP521_R1,
                                     ProtocolVersion.PROTOCOLS_TO_13),
 
-    // RSASSA-PSS algorithms with public key OID rsaEncryption
-    //
-    // The minimalKeySize is calculated as (See RFC 8017 for details):
-    //     hash length + salt length + 16
-    RSA_PSS_RSAE_SHA256     (0x0804, "rsa_pss_rsae_sha256",
-                                    "RSASSA-PSS", "RSA",
-                                    SigAlgParamSpec.RSA_PSS_SHA256, 528,
-                                    ProtocolVersion.PROTOCOLS_12_13),
-    RSA_PSS_RSAE_SHA384     (0x0805, "rsa_pss_rsae_sha384",
-                                    "RSASSA-PSS", "RSA",
-                                    SigAlgParamSpec.RSA_PSS_SHA384, 784,
-                                    ProtocolVersion.PROTOCOLS_12_13),
-    RSA_PSS_RSAE_SHA512     (0x0806, "rsa_pss_rsae_sha512",
-                                    "RSASSA-PSS", "RSA",
-                                    SigAlgParamSpec.RSA_PSS_SHA512, 1040,
-                                    ProtocolVersion.PROTOCOLS_12_13),
-
-    // RSASSA-PSS algorithms with public key OID RSASSA-PSS
-    //
-    // The minimalKeySize is calculated as (See RFC 8017 for details):
-    //     hash length + salt length + 16
-    RSA_PSS_PSS_SHA256      (0x0809, "rsa_pss_pss_sha256",
-                                    "RSASSA-PSS", "RSASSA-PSS",
-                                    SigAlgParamSpec.RSA_PSS_SHA256, 528,
-                                    ProtocolVersion.PROTOCOLS_12_13),
-    RSA_PSS_PSS_SHA384      (0x080A, "rsa_pss_pss_sha384",
-                                    "RSASSA-PSS", "RSASSA-PSS",
-                                    SigAlgParamSpec.RSA_PSS_SHA384, 784,
-                                    ProtocolVersion.PROTOCOLS_12_13),
-    RSA_PSS_PSS_SHA512      (0x080B, "rsa_pss_pss_sha512",
-                                    "RSASSA-PSS", "RSASSA-PSS",
-                                    SigAlgParamSpec.RSA_PSS_SHA512, 1040,
-                                    ProtocolVersion.PROTOCOLS_12_13),
 
     // RSASSA-PKCS1-v1_5 algorithms
     RSA_PKCS1_SHA256        (0x0401, "rsa_pkcs1_sha256", "SHA256withRSA",
@@ -183,43 +150,6 @@ enum SignatureScheme {
             "anonymous",    "rsa",      "dsa",      "ecdsa",
         };
 
-    static enum SigAlgParamSpec {   // support RSASSA-PSS only now
-        RSA_PSS_SHA256 ("SHA-256", 32),
-        RSA_PSS_SHA384 ("SHA-384", 48),
-        RSA_PSS_SHA512 ("SHA-512", 64);
-
-        final private AlgorithmParameterSpec parameterSpec;
-        final boolean isAvailable;
-
-        SigAlgParamSpec(String hash, int saltLength) {
-            // See RFC 8017
-            PSSParameterSpec pssParamSpec =
-                    new PSSParameterSpec(hash, "MGF1",
-                            new MGF1ParameterSpec(hash), saltLength, 1);
-
-            boolean mediator = true;
-            try {
-                Signature signer = JsseJce.getSignature("RSASSA-PSS");
-                signer.setParameter(pssParamSpec);
-            } catch (InvalidAlgorithmParameterException |
-                    NoSuchAlgorithmException exp) {
-                mediator = false;
-                if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
-                    SSLLogger.warning(
-                        "RSASSA-PSS signature with " + hash +
-                        " is not supported by the underlying providers", exp);
-                }
-            }
-
-            this.isAvailable = mediator;
-            this.parameterSpec = mediator ? pssParamSpec : null;
-        }
-
-        AlgorithmParameterSpec getParameterSpec() {
-            return parameterSpec;
-        }
-    }
-
     // performance optimization
     private static final Set<CryptoPrimitive> SIGNATURE_PRIMITIVE_SET =
         Collections.unmodifiableSet(EnumSet.of(CryptoPrimitive.SIGNATURE));
@@ -241,10 +171,10 @@ enum SignatureScheme {
 
     private SignatureScheme(int id, String name,
             String algorithm, String keyAlgorithm,
-            SigAlgParamSpec signAlgParamSpec, int minimalKeySize,
+            AlgorithmParameterSpec signAlgParameter, int minimalKeySize,
             ProtocolVersion[] supportedProtocols) {
         this(id, name, algorithm, keyAlgorithm,
-                signAlgParamSpec, null, minimalKeySize,
+                signAlgParameter, null, minimalKeySize,
                 supportedProtocols, supportedProtocols);
     }
 
@@ -259,7 +189,7 @@ enum SignatureScheme {
 
     private SignatureScheme(int id, String name,
             String algorithm, String keyAlgorithm,
-            SigAlgParamSpec signAlgParamSpec,
+            AlgorithmParameterSpec signAlgParameter,
             NamedGroup namedGroup, int minimalKeySize,
             ProtocolVersion[] supportedProtocols,
             ProtocolVersion[] handshakeSupportedProtocols) {
@@ -267,8 +197,7 @@ enum SignatureScheme {
         this.name = name;
         this.algorithm = algorithm;
         this.keyAlgorithm = keyAlgorithm;
-        this.signAlgParameter =
-            signAlgParamSpec != null ? signAlgParamSpec.parameterSpec : null;
+        this.signAlgParameter = signAlgParameter;
         this.namedGroup = namedGroup;
         this.minimalKeySize = minimalKeySize;
         this.supportedProtocols = Arrays.asList(supportedProtocols);
@@ -286,18 +215,14 @@ enum SignatureScheme {
 
         // Check the specific algorithm and parameters.
         if (mediator) {
-            if (signAlgParamSpec != null) {
-                mediator = signAlgParamSpec.isAvailable;
-            } else {
-                try {
-                    JsseJce.getSignature(algorithm);
-                } catch (Exception e) {
-                    mediator = false;
-                    if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
-                        SSLLogger.warning(
-                            "Signature algorithm, " + algorithm +
-                            ", is not supported by the underlying providers");
-                    }
+            try {
+                JsseJce.getSignature(algorithm);
+            } catch (Exception e) {
+                mediator = false;
+                if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
+                    SSLLogger.warning(
+                        "Signature algorithm, " + algorithm +
+                        ", is not supported by the underlying providers");
                 }
             }
         }
